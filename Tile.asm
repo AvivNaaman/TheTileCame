@@ -15,11 +15,14 @@ retAddress dw 0
 clock equ es:6CH
 reqClock dw 0
 ; x, y & color
-x db 0
-y db 0
+x dw 0
+y dw 0
 color db 0
+y_done dw 0 ; temp for storing done y writing
 ; points
 points db 0
+; repeats
+repeats dw 20
 ; error message
 ImageErrorMessage db 'An Error Occured During image file reading', 13, 10 ,'$'
 CODESEG
@@ -142,26 +145,28 @@ proc GenerateValues
 	mov ax, 40h
 	mov es, ax
 	mov di, 0
-	mov cx, 10
 	; Generate X
 	mov ax, [clock]
 	mov bx, [word cs:di]
 	xor ax, bx
-	and ax, 001001000000 ; 320 - x value
+	and ax, 0101000000b ; 320 - x value
 	mov [x], ax
 	inc di
 	; Generate Y
 	mov ax, [clock]
+	xor bx, bx
 	mov bx, [word cs:di]
 	xor ax, bx
-	and ax, 11001000 ; 200 - y value
+	and ax, 11001000b ; 200 - y value
 	mov [y], ax
 	inc di
 	; Generate color
 	mov ax, [clock]
-	mov bx, [word cs:di]
-	xor ax, bx
-	and ax, 1110 ; 14 - color value
+	xor bx,bx
+	mov bl, [byte cs:di]
+	xor al, bl
+	and al, 1110b ; 14 - color value
+	mov [color], al
 	ret
 endp GenerateValues
 proc InitMouse
@@ -175,19 +180,49 @@ endp InitMouse
 proc WaitForSquareClick
 	; Waits 1 second totally. if mouse clicked on square - great, make sound and add points
 	mov ax, [clock]
-	add ax, 185
-	mov [reqClock], ax
-	SecondPastOrClicked:
-		; get mouse info
+	; calculate how many ticks will be after 1 second past
+	add ax, 18 ; 18x0.55=0.99secs
+	mov [reqClock], ax ; and store the value
+	UntilSecondPast:
+		mov ax, [clock]
+		cmp ax, [reqClock]
+		jge WaitForSquareClick_end ; 1 second past, stop checking
+		
 		mov ax, 3h
 		int 33h
-		; is clicked
-		mov ax, [clock]
+		cmp bx, 01b
+		jne UntilSecondPast ; not clicked
+		mov bh, 0h
+		mov ah, 0dh
+		int 10h
+		cmp al, [color]
+		jne UntilSecondPast ; or color doesn't match
 		
-		cmp ax, [reqClock]
-		je WaitForSquareClick_end ; 1 second past
 	WaitForSquareClick_end:
-		ret
+	ret
+endp
+proc DrawSquare
+	; no passing here yet. we're currently using global varriable.
+	mov cx, 40
+		DrawSquare_Row:
+			mov [y_done], cx
+			push cx
+			mov cx, 40
+			DrawSquare_Col:
+				push cx
+				add cx, [x]
+				mov dx, [y]
+				add dx, [y_done]
+				mov ax, 0
+				mov al, [color]
+				mov ah, 0ch
+				int 10h
+				pop cx
+				loop DrawSquare_Col
+			pop cx
+			loop DrawSquare_Row
+	mov [y_done], 0
+	ret
 endp
 start:
     mov ax, @data
@@ -206,11 +241,20 @@ start:
 	call InitMouse
 	; Wait until button is clicked
 	call WaitForBtnClick
+	mov cx, [repeats]
 	MainLoop:
 		call GenerateValues ; generate the random values for x, y and color
 		call DrawSquare ; draw square at (x,y) and by the color
 		call WaitForSquareClick
-		jmp MainLoop
+		dec [repeats]
+		cmp [repeats], 0
+		jge MainLoop
+		
+	WaitForKeypress:
+		mov ah, 0bh
+		int 21h      ;RETURNS AL=0 : NO KEY PRESSED, AL!=0 : KEY PRESSED.
+		cmp al, 0
+		je  WaitForKeypress	
     ; Back to text mode
     mov ah, 0
     mov al, 2
