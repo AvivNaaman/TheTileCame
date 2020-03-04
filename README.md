@@ -1,2 +1,2 @@
 # TheTileCame
-Assembly game - the tile came. Small TASM project
+Assembly game - the tile came. Small TASM project for school.
