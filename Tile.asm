@@ -2,10 +2,9 @@ IDEAL
 MODEL small
 STACK 100h
 DATASEG
-; --------------------------
-; Your variables here
-; start image stuff
+; image start filename
 start_filename db 'start.bmp',0
+; image stuff
 filehandle dw ?
 Header db 54 dup (0)
 Palette db 256*4 dup (0)
@@ -13,18 +12,25 @@ ScrLine db 320 dup (0)
 retAddress dw 0
 ; clock
 clock equ es:6CH
-reqClock dw 0
 ; x, y & color
 x dw 0
 y dw 0
-color db 0
+color db 3
 y_done dw 0 ; temp for storing done y writing
-; points
-points db 0
+; score
+score db 0
+; random generation - seed
+seed dw 0
 ; repeats
 repeats dw 20
-; error message
+; timer counters
+nextSecond dw 0
+second20 dw 0 ; the 20th second
+; messages
 ImageErrorMessage db 'An Error Occured During image file reading', 13, 10 ,'$'
+GameOverMessage db 13,10,'   Game Over! You Scored: $'
+PressAnyKeyToContinueMessage db 13,10,13,10,13,10,'      Press Any Key to continue$'
+
 CODESEG
 ; --------------------------
 proc OpenFile
@@ -120,6 +126,7 @@ proc CopyBitmap
     loop PrintBMPLoop
     ret
 endp CopyBitmap
+; Waits until the mouse is clicked on the button, between (140, 125) to (182,145)
 proc WaitForBtnClick
 	WaitForBtnClick_loop:
 		mov ax, 03h
@@ -141,34 +148,61 @@ proc WaitForBtnClick
 	WaitForBtnClick_loop_end:
 		ret
 endp
-proc GenerateValues
+; Generates random values for x, y, and color
+proc GenerateRandom
+	push es
 	mov ax, 40h
 	mov es, ax
-	mov di, 0
-	; Generate X
+	; generate values for x,y,color vars.
+	; Unfortanatly, the code from assembly gvahim didn't work well
+	; so I used the LCG algorithm: (seed*const0+const1)%(MaxResult+1)
+	; seed is the new generated number each time, so numbers are "pure" random, as much as can be right now.
+	cmp [seed], 0
+	jne ContinueGenerate
 	mov ax, [clock]
-	mov bx, [word cs:di]
-	xor ax, bx
-	and ax, 0101000000b ; 320 - x value
-	mov [x], ax
-	inc di
-	; Generate Y
-	mov ax, [clock]
-	xor bx, bx
-	mov bx, [word cs:di]
-	xor ax, bx
-	and ax, 11001000b ; 200 - y value
-	mov [y], ax
-	inc di
-	; Generate color
-	mov ax, [clock]
-	xor bx,bx
-	mov bl, [byte cs:di]
-	xor al, bl
-	and al, 1110b ; 14 - color value
-	mov [color], al
+	mov [seed], ax
+	ContinueGenerate:
+		mov ax, [seed]
+		mov bx, 487
+		mul bx ; ax:dx = seed*487
+		mov bx, 357
+		add ax, bx ; dx:ax = seed*487+357
+		mov bx, 280 ; don't get out of the screen
+		add ax, dx
+		xor dx, dx ; reset dx, to prevent crashes
+		div bx ; dx = (seed*487+357)%280 -> 0<=dx<=279
+		mov [x], dx
+		mov [seed], dx
+		
+		
+		mov ax, [seed]
+		mov bx, 487
+		mul bx ; ax:dx = seed*487
+		mov bx, 357
+		add ax, bx ; dx:ax = seed*487+357
+		mov bx, 160 ; don't get out of the screen
+		add ax, dx
+		xor dx, dx ; reset dx, to prevent crashes
+		div bx ; dx = (seed*487+357)%160 -> 0<=dx<=159
+		mov [y], dx
+		mov [seed], dx
+		
+		mov ax, [seed]
+		mov bx, 487
+		mul bx ; ax:dx = seed*487
+		mov bx, 357
+		add ax, bx ; dx:ax = seed*487+357
+		mov bx, 63
+		add ax, dx
+		xor dx, dx ; reset dx, to prevent crashes
+		div bx ; dx = (seed*487+357)%63 -> 0<=dx<=62
+		mov [color], dl
+		inc [color] ; we don't like the color 0 (black)
+		mov [seed], dx
+		pop es
 	ret
-endp GenerateValues
+endp GenerateRandom
+; Initializes mouse - we might need that more than once
 proc InitMouse
 	; Initialize mouse
 	mov ax, 0h
@@ -177,30 +211,7 @@ proc InitMouse
 	int 33h
 	ret
 endp InitMouse
-proc WaitForSquareClick
-	; Waits 1 second totally. if mouse clicked on square - great, make sound and add points
-	mov ax, [clock]
-	; calculate how many ticks will be after 1 second past
-	add ax, 18 ; 18x0.55=0.99secs
-	mov [reqClock], ax ; and store the value
-	UntilSecondPast:
-		mov ax, [clock]
-		cmp ax, [reqClock]
-		jge WaitForSquareClick_end ; 1 second past, stop checking
-		
-		mov ax, 3h
-		int 33h
-		cmp bx, 01b
-		jne UntilSecondPast ; not clicked
-		mov bh, 0h
-		mov ah, 0dh
-		int 10h
-		cmp al, [color]
-		jne UntilSecondPast ; or color doesn't match
-		
-	WaitForSquareClick_end:
-	ret
-endp
+; Draws a square at (x,y) coordinates
 proc DrawSquare
 	; no passing here yet. we're currently using global varriable.
 	mov cx, 40
@@ -224,6 +235,110 @@ proc DrawSquare
 	mov [y_done], 0
 	ret
 endp
+; clears the screen
+proc ClearScreen
+	; clear screen
+	mov ax,0A000h
+	mov es,ax
+	xor ax, ax ; set ax to 0 - black
+	mov cx,32000
+	cld ; clear dir flag
+	rep stosw ; copy ax value (0) to ax:cx, and repeat until cx is 0
+	ret
+endp
+; plays success click sound
+proc MakeSuccessSound
+	; activate spekare
+	in al, 61h
+	or al, 00000011b
+	out 61h, al
+	; get access
+	mov al, 0B6h
+	out 43h, al
+	; send sound in freq of 2135Hz => send 022Fh to port 42h, by sections:
+	mov al, 02Fh
+	out 42h, al
+	mov al, 02h
+	out 42h, al
+	; run for 12 ticks:
+	mov ax, [clock]
+	mov cx, 12
+	MakeSuccessSound_WaitByCxTicks:
+		cmp ax, [clock]
+		je MakeSuccessSound_WaitByCxTicks
+		loop MakeSuccessSound_WaitByCxTicks
+	; disable speaker
+	in al, 61h
+	and al, 11111100b
+	out 61h, al
+	ret
+endp
+; plays failed click sound
+proc MakeFailedSound
+	; activate spekare
+	in al, 61h
+	or al, 00000011b
+	out 61h, al
+	; get access
+	mov al, 0B6h
+	out 43h, al
+	; send sound in freq of 2135Hz => send 0710h to port 42h, by sections:
+	mov al, 010h
+	out 42h, al
+	mov al, 07h
+	out 42h, al
+	; run for 15 ticks:
+	mov ax, [clock]
+	mov cx, 15
+	MakeFailedSound_WaitByCxTicks:
+		cmp ax, [clock]
+		je MakeFailedSound_WaitByCxTicks
+		loop MakeFailedSound_WaitByCxTicks
+	; disable speaker
+	in al, 61h
+	and al, 11111100b
+	out 61h, al
+	ret
+endp
+; initializes the clock for usage
+proc InitClock
+	mov ax, 40h
+	mov es, ax
+	ret
+endp
+; prints the score 
+proc PrintScore
+	; clear screen at 100% and make the mouse gone
+	mov ax, 13h
+	int 10h
+	mov dx, offset GameOverMessage 
+	mov ah, 9h
+	int 21h ; print game over
+	; print score
+	xor dx, dx
+	xor ax, ax
+	mov al, [score]
+	mov bx, 10
+	div bx
+	add dx, 48 ; *10^0
+	add ax, 48 ; *10^1
+	PrintScoreAndTimeLeft_PrintPower1:
+		push dx		
+		cmp ax, 48
+		jbe PrintScoreAndTimeLeft_PrintPower0 ; if 0, don't print it
+		; print *10^1 first
+		mov dx, ax
+		mov ah, 02h
+		int 21h
+	PrintScoreAndTimeLeft_PrintPower0:
+		pop dx
+		mov ah, 02h
+		int 21h
+	mov dx, offset PressAnyKeyToContinueMessage 
+	mov ah, 9h
+	int 21h ; print press any key to continue
+	ret
+endp
 start:
     mov ax, @data
     mov ds, ax
@@ -233,6 +348,7 @@ start:
     ; Show start screen
     push offset start_filename ; pass filename by ref
     call OpenFile
+	pop ax ; get out of my stack!
     call ReadHeader
     call ReadPalette
     call CopyPal
@@ -241,26 +357,72 @@ start:
 	call InitMouse
 	; Wait until button is clicked
 	call WaitForBtnClick
+	; reset graphics
+	mov ax, 13h
+	int 10h
+	call InitMouse ; initialize mouse again
+	call InitClock
+	mov ax, [clock]
+	add ax, 400 ; ax=now+20sec
+	mov [second20], ax
 	mov cx, [repeats]
 	MainLoop:
-		call GenerateValues ; generate the random values for x, y and color
-		call DrawSquare ; draw square at (x,y) and by the color
-		call WaitForSquareClick
-		dec [repeats]
-		cmp [repeats], 0
-		jge MainLoop
+		call ClearScreen ; Clear the screen
+		call InitClock
+		mov ax, [clock]
+		cmp ax, [second20]
+		jae MainLoop_End ; if 20 secs past, stop the program
+		; when will a second past (by ticks)
+		mov ax, [clock]
+		add ax, 18 ; 18*0.055=0.99
+		mov [nextSecond], ax
 		
+		call GenerateRandom ; generate the random values for x, y and color
+		call DrawSquare ; draws square at (x,y) and by the color
+		WaitSecond:
+			call InitClock
+			mov ax, [clock]
+			cmp ax, [nextSecond]
+			jge MainLoop_Next ; 1 sec past, redraw
+			; second not past yet, check mouse:
+			mov ax, 03h
+			int 33h
+			cmp bx, 01h
+			jne WaitSecond ; not clicked, wait for click again
+			shr cx, 1 ; adjust mouse X for 320 instead of 640 (VGA stuff)
+			; read mouse color:
+			mov bh, 0h
+			mov ah, 0dh
+			int 10h
+			cmp al, [color] ; check if color's the same
+			jne WaitSecond ; if not, wait for another click
+			MainLoop_SuccessClick:
+				; Everything Nice now. Make sound & increase score:
+				inc [score]
+				call MakeSuccessSound ; make the nice sound of success
+				jmp MainLoop_Next
+			MainLoop_FailedClick:
+				; User failed in clicking 
+				call MakeFailedSound
+		MainLoop_Next:
+			dec [repeats] ; get iterations count
+			cmp [repeats], 0
+			jg MainLoop
+	MainLoop_End:
+	call PrintScore
+	; wait for key press to continue
 	WaitForKeypress:
 		mov ah, 0bh
 		int 21h      ;RETURNS AL=0 : NO KEY PRESSED, AL!=0 : KEY PRESSED.
 		cmp al, 0
 		je  WaitForKeypress	
+	
     ; Back to text mode
     mov ah, 0
     mov al, 2
     int 10h
 
-exit :
+exit:
 mov ax, 4c00h
 int 21h
 END start
