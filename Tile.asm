@@ -50,7 +50,7 @@ proc OpenFile
     int 21h
     OpenFile_end:
     pop bp
-    ret 6
+    ret 2
 endp OpenFile
 proc ReadHeader
     ; Read BMP file header, 54 bytes
@@ -348,7 +348,6 @@ start:
     ; Show start screen
     push offset start_filename ; pass filename by ref
     call OpenFile
-	pop ax ; get out of my stack!
     call ReadHeader
     call ReadPalette
     call CopyPal
@@ -395,7 +394,7 @@ start:
 			mov ah, 0dh
 			int 10h
 			cmp al, [color] ; check if color's the same
-			jne WaitSecond ; if not, wait for another click
+			jne MainLoop_FailedClick ; if not, wait for another click
 			MainLoop_SuccessClick:
 				; Everything Nice now. Make sound & increase score:
 				inc [score]
